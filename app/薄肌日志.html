@@ -154,6 +154,7 @@ textarea,select,input[type=date],input.txt{width:100%;border:1px solid var(--lin
 .tabbar button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .tabbar button.on{color:var(--accent);font-weight:700}
 /* sheet */
+[hidden]{display:none!important}
 .sheet{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;justify-content:flex-end}
 .sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.45)}
 .sheet-panel{position:relative;background:var(--surface);border-radius:16px 16px 0 0;max-height:92%;overflow:auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:12px;width:100%;max-width:560px;margin:0 auto}
@@ -162,6 +163,11 @@ textarea,select,input[type=date],input.txt{width:100%;border:1px solid var(--lin
 .items li{display:flex;justify-content:space-between;gap:8px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .grid4 .inp input{font-size:17px}
+.confirmbar{position:fixed;left:0;right:0;bottom:calc(66px + env(safe-area-inset-bottom,0px));z-index:12;padding:0 12px}
+.confirmbar-in{max-width:536px;margin:0 auto;background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:8px;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.confirmbar-in .msg{flex:1;min-width:0;font-size:14px;font-weight:600}
+.confirmbar-in .msg small{display:block;font-weight:400;color:var(--muted);font-size:12px}
+.wrap.has-confirm{padding-bottom:calc(170px + env(safe-area-inset-bottom,0px))}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:14px;z-index:30;max-width:calc(100% - 32px);text-align:center}
 @media (max-width:380px){.meters{grid-template-columns:1fr 1fr}.tiles{grid-template-columns:1fr 1fr}.grid4{grid-template-columns:1fr 1fr}}
 @media (prefers-reduced-motion:no-preference){.bar i{transition:width .4s ease}}
@@ -190,6 +196,7 @@ textarea,select,input[type=date],input.txt{width:100%;border:1px solid var(--lin
 </nav>
 
 <div id="sheet" class="sheet" hidden></div>
+<div id="confirmbar" class="confirmbar" hidden><div class="confirmbar-in"><div class="msg" id="cb-msg"></div><button class="btn sm" data-act="discard">撤销</button><button class="btn sm primary" data-act="confirm-save">确认上传</button></div></div>
 <div id="toast" class="toast" hidden></div>
 <input type="file" id="f-cam" accept="image/*" capture="environment" hidden>
 <input type="file" id="f-lib" accept="image/*" hidden>
@@ -215,11 +222,13 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const avg=a=>{const v=a.filter(x=>x!=null&&isFinite(x));return v.length?v.reduce((s,x)=>s+x,0)/v.length:null;};
 
 const S={db:null,sample:null,canImg:false,plan:null,planLoaded:false,days:{},daysLoaded:false,reports:{},photos:{},
-  cur:today(),tab:'today',lastEdit:0,timers:{},chains:{},pending:0,noDb:false,confirmDel:null,meal:null,gen:null};
+  cur:today(),tab:'today',lastEdit:0,timers:{},chains:{},pending:0,dirty:{},server:{},noDb:false,confirmDel:null,meal:null,gen:null};
 
 /* ---------- status & toast ---------- */
 function setStatus(text,cls){const el=$('#status');el.textContent=text;el.className='status '+(cls||'');}
-function syncStatus(){ if(S.noDb) return setStatus('未连接存储','bad'); setStatus(S.pending?'保存中':'已同步',S.pending?'busy':'ok'); }
+function dirtyDays(){ return Object.keys(S.dirty).filter(k=>S.dirty[k]).sort(); }
+function syncStatus(){ renderConfirm(); if(S.noDb) return setStatus('未连接存储','bad'); if(S.pending) return setStatus('上传中','busy'); if(dirtyDays().length) return setStatus('有修改未上传','busy'); setStatus('已同步','ok'); }
+function renderConfirm(){ const ds=S.noDb?[]:dirtyDays(), bar=$('#confirmbar'); if(!bar) return; bar.hidden=!ds.length; document.querySelector('.wrap').classList.toggle('has-confirm',!!ds.length); if(ds.length) $('#cb-msg').innerHTML='有修改还没上传<small>'+ds.map(md).join('、')+' · 按确认后才会保存</small>'; }
 let toastT; function toast(m){const el=$('#toast');el.textContent=m;el.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>el.hidden=true,3200);}
 function dbErr(e){const c=e&&e.code;return ({quota_exceeded:'存储空间满了：可以删掉一些旧的食物照片。',invalid_argument:'没有保存权限：只有这个日志的主人能写入。',resource_exhausted:'操作太频繁，稍等几秒再试。',revoked:'访问权限已变更，请刷新页面。'})[c]||'保存失败，请检查网络后再试。';}
 function sErr(e){const c=e&&e.code;return ({not_granted:'没有获得使用 Claude 的许可，AI 功能已关闭。刷新页面可以重新授权。',sampling_disabled:'这个账号暂时不能使用 Claude。',rate_limited:'调用太频繁或额度已用完，稍后再试。',image_rejected:'这张图片无法识别，换一张试试。',images_unavailable:'当前环境不能发送图片，请用文字描述这一餐。',invalid_json:'AI 返回的格式不对，再点一次试试。',refused:'AI 没有处理这次请求，换个描述试试。',session_expired:'登录已过期，请重新登录 claude.ai。',prompt_too_large:'这一周的数据太多，删减备注后再试。',cancelled:'已停止。',empty_completion:'AI 没有返回内容，再试一次。'})[c]||'AI 暂时出错了，稍后再试。';}
@@ -239,15 +248,36 @@ function lastPerf(name,before){ const ks=Object.keys(S.days).filter(k=>k<before)
 const setStr=(L,kind)=>L.filter(x=>x&&(x.w!=null||x.r!=null)).map(x=>kind==='time'?((x.r==null?'–':x.r)+'秒'):((x.w==null?'–':x.w)+'×'+(x.r==null?'–':x.r))).join('  ');
 
 /* ---------- saving ---------- */
-function touch(s){ S.lastEdit=Date.now(); clearTimeout(S.timers[s]); S.timers[s]=setTimeout(()=>{delete S.timers[s];save(s);},700); }
+/* Edits stay on this device until the user presses 确认上传. */
+function touch(s){ S.lastEdit=Date.now(); S.dirty[s]=true; syncStatus(); }
 function save(s){
   if(!S.db) return Promise.resolve();
   const body=clone(S.days[s]); body.updatedAt=Date.now();
   S.pending++; syncStatus();
-  S.chains[s]=(S.chains[s]||Promise.resolve()).then(()=>S.db.doc('days/'+s).set(body)).catch(e=>toast(dbErr(e))).finally(()=>{S.pending--;syncStatus();});
+  S.chains[s]=(S.chains[s]||Promise.resolve()).then(()=>S.db.doc('days/'+s).set(body)).then(()=>{S.server[s]=clone(body);return true;}).catch(e=>{toast(dbErr(e));return false;}).finally(()=>{S.pending--;syncStatus();});
   return S.chains[s];
 }
-function flush(s){ if(S.timers[s]){clearTimeout(S.timers[s]);delete S.timers[s];return save(s);} return S.chains[s]||Promise.resolve(); }
+/* Meals are saved by their own button; write them on top of the last uploaded day so unconfirmed edits stay unconfirmed. */
+function saveMeals(s){
+  if(!S.db) return Promise.resolve();
+  if(!S.dirty[s]) return save(s);
+  const body=norm(clone(S.server[s]||{}),s); body.meals=clone(day(s).meals); body.updatedAt=Date.now();
+  S.pending++; syncStatus();
+  S.chains[s]=(S.chains[s]||Promise.resolve()).then(()=>S.db.doc('days/'+s).set(body)).then(()=>{S.server[s]=clone(body);}).catch(e=>toast(dbErr(e))).finally(()=>{S.pending--;syncStatus();});
+  return S.chains[s];
+}
+async function confirmSave(){
+  const ds=dirtyDays(); if(!ds.length) return;
+  if(!S.db){ toast('没有连接存储，无法上传。'); return; }
+  const a=document.activeElement; if(a&&a.blur) a.blur();
+  const res=await Promise.all(ds.map(s=>{ delete S.dirty[s]; return save(s).then(ok=>{ if(!ok) S.dirty[s]=true; return ok; }); }));
+  syncStatus(); renderArchive();
+  if(res.every(Boolean)) toast('已上传');
+}
+function discard(){
+  dirtyDays().forEach(s=>{ delete S.dirty[s]; if(S.server[s]) S.days[s]=norm(clone(S.server[s]),s); else { const m=S.days[s]&&S.days[s].meals; S.days[s]=blankDay(s); if(m) S.days[s].meals=m; } });
+  renderAll(); toast('已撤销未上传的修改');
+}
 
 /* ---------- rendering ---------- */
 function loadingCard(t){return '<div class="card empty"><h3>'+esc(t)+'</h3><p>稍等一下。</p></div>';}
@@ -544,7 +574,7 @@ async function saveMeal(){
   if(!meal.kcal&&!meal.protein){ m.msg='请先填写热量或蛋白质。'; renderSheet(); return; }
   if(m.thumb&&S.db){ const pid='p'+meal.id; try{ await S.db.doc('photos/'+pid).set({date:S.cur,thumb:m.thumb}); meal.photoId=pid; S.photos[pid]=m.thumb; }catch(e){ toast('照片没存上，热量数据会照常保存。'); } }
   const s=S.cur, d=day(s); d.meals.push(meal); d.meals.sort((a,b)=>String(a.time).localeCompare(String(b.time)));
-  closeMeal(); renderToday(); renderArchive(); save(s); toast('已记录：'+meal.desc+' '+r0(meal.kcal)+' 千卡');
+  closeMeal(); renderToday(); renderArchive(); saveMeals(s); toast('已记录：'+meal.desc+' '+r0(meal.kcal)+' 千卡');
 }
 
 /* ---------- weekly report ---------- */
@@ -579,7 +609,6 @@ function cleanWorkouts(w,fallback){
 async function generate(){
   if(!S.sample||!S.db||(S.gen&&S.gen.busy)) return;
   const ws=($('#wk')&&$('#wk').value)||mondayOf(today());
-  await flush(S.cur);
   const st=weekStats(ws);
   if(!st.daysLogged){ S.gen={ws,msg:'这一周还没有任何记录，先记几天再生成。'}; renderReport(); return; }
   const ctl=new AbortController();
@@ -626,14 +655,14 @@ document.addEventListener('click',e=>{
   const act=b.dataset.act;
   if(act!=='meal-del'&&S.confirmDel){ S.confirmDel=null; }
   switch(act){
-    case 'prev': flush(S.cur); S.cur=addDays(S.cur,-1); renderToday(); break;
-    case 'next': flush(S.cur); S.cur=addDays(S.cur,1); renderToday(); break;
-    case 'gotoday': flush(S.cur); S.cur=today(); renderToday(); break;
+    case 'prev': S.cur=addDays(S.cur,-1); renderToday(); break;
+    case 'next': S.cur=addDays(S.cur,1); renderToday(); break;
+    case 'gotoday': S.cur=today(); renderToday(); break;
     case 'open-day': S.cur=b.dataset.d; showTab('today'); renderToday(); break;
     case 'wtype': { const d=day(S.cur); d.workout.type=b.dataset.v; touch(S.cur); renderToday(); break; }
     case 'energy': { const d=day(S.cur), v=+b.dataset.v; d.energy=d.energy===v?null:v; touch(S.cur); renderToday(); break; }
     case 'addset': { const d=day(S.cur), ex=S.plan.workouts[d.workout.type][+b.dataset.ex]; const L=d.workout.log[ex.name]||(d.workout.log[ex.name]=[]); const n=Math.max(+ex.sets||3,L.length); while(L.length<=n) L.push({w:null,r:null}); touch(S.cur); renderToday(); break; }
-    case 'meal-del': { const id=b.dataset.id; if(S.confirmDel!==id){ S.confirmDel=id; renderToday(); return; } const d=day(S.cur); d.meals=d.meals.filter(m=>m.id!==id); S.confirmDel=null; touch(S.cur); renderToday(); renderArchive(); break; }
+    case 'meal-del': { const id=b.dataset.id; if(S.confirmDel!==id){ S.confirmDel=id; renderToday(); return; } const d=day(S.cur); d.meals=d.meals.filter(m=>m.id!==id); S.confirmDel=null; saveMeals(S.cur); renderToday(); renderArchive(); break; }
     case 'meal-photo': openMeal('photo'); break;
     case 'meal-text': openMeal('text'); break;
     case 'sheet-close': closeMeal(); break;
@@ -645,6 +674,8 @@ document.addEventListener('click',e=>{
     case 'gen-stop': if(S.gen&&S.gen.ctl) S.gen.ctl.abort(); break;
     case 'apply': b.disabled=true; applyReport(b.dataset.id); break;
     case 'save-plan': savePlanEdits(); break;
+    case 'confirm-save': confirmSave(); break;
+    case 'discard': discard(); break;
   }
   if(S.confirmDel===null) document.querySelectorAll('.del.confirm').forEach(x=>{x.classList.remove('confirm');x.textContent='删除';});
 });
@@ -657,13 +688,12 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('change',e=>{
   const t=e.target;
-  if(t.id==='wdone'){ day(S.cur).workout.done=t.checked; touch(S.cur); flush(S.cur); renderArchive(); if(t.checked) toast('训练已完成，记得补够蛋白质。'); }
+  if(t.id==='wdone'){ day(S.cur).workout.done=t.checked; touch(S.cur); renderArchive(); if(t.checked) toast('训练已完成，记得补够蛋白质。'); }
   if(t.id==='wk'){ S.gen={ws:t.value}; renderReport(); }
   if(t.id==='f-cam'||t.id==='f-lib'){ const f=t.files&&t.files[0]; t.value=''; onPicked(f); }
-  if(t.closest&&t.closest('#tab-today')&&(t.dataset.body||t.dataset.ex!=null||t.dataset.w)) flush(S.cur);
 });
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&S.meal) closeMeal(); });
-document.addEventListener('visibilitychange',()=>{ if(document.hidden) flush(S.cur); });
+window.addEventListener('beforeunload',e=>{ if(dirtyDays().length){ e.preventDefault(); e.returnValue=''; } });
 
 /* ---------- boot ---------- */
 async function boot(){
@@ -676,12 +706,13 @@ async function boot(){
   S.db=db; syncStatus();
   const onErr=e=>{ setStatus('连接中断，请刷新','bad'); };
   db.doc('config/plan').onSnapshot(snap=>{ S.plan=snap.exists?clone(snap.data()):null; S.planLoaded=true;
-    for(const k in S.days){ if(!hasData(S.days[k])) delete S.days[k]; }
+    for(const k in S.days){ if(!S.dirty[k]&&!hasData(S.days[k])) delete S.days[k]; }
     renderAll(true); },onErr);
   db.collection('days').onSnapshot(snap=>{
     for(const ch of snap.docChanges()){ const id=ch.doc.id;
-      if(ch.type==='removed'){ delete S.days[id]; continue; }
-      if(S.timers[id]||(id===S.cur&&Date.now()-S.lastEdit<4000)) continue;
+      if(ch.type==='removed'){ delete S.server[id]; if(!S.dirty[id]) delete S.days[id]; continue; }
+      S.server[id]=clone(ch.doc.data());
+      if(S.dirty[id]) continue;
       S.days[id]=norm(clone(ch.doc.data()),id); }
     S.daysLoaded=true; renderAll(true); },onErr);
   db.collection('reports').onSnapshot(snap=>{ S.reports={}; snap.docs.forEach(x=>{S.reports[x.id]=clone(x.data());}); if(!(S.gen&&S.gen.busy)) renderReport(); },onErr);
